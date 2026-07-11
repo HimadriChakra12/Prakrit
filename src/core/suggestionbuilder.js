@@ -208,7 +208,7 @@ Avro.SuggestionBuilder.prototype = {
                             }
                         }
                         
-                        for (i in tempList){
+                        for (var i in tempList){
                             rList.push(tempList[i]);
                         }
                     }
@@ -253,7 +253,7 @@ Avro.SuggestionBuilder.prototype = {
                 var dictSuggestionWithSuffix = this._addSuffix(splitWord);
 
                 var sortedWords = this._sortByPhoneticRelevance(phonetic, dictSuggestionWithSuffix);
-                for (i in sortedWords){
+                for (var i in sortedWords){
                     this._addToArray(words, sortedWords[i]);
                 }
         
@@ -266,7 +266,7 @@ Avro.SuggestionBuilder.prototype = {
                 suggestion['prevSelection'] = this._getPreviousSelection(splitWord, words);
         
                 //Add padding to all, except exact autocorrect
-                for (i in words){
+                for (var i in words){
                     if (autoCorrect['exact']){
                         if (autoCorrect['corrected'] != words[i]){
                             words[i] = splitWord['begin'] + words[i] + splitWord['end'];

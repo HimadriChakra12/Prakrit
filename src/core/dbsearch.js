@@ -102,7 +102,7 @@ Avro.DBSearch.prototype = {
          
         var retWords = [];
         
-        for(i in tableList) {
+        for (var i in tableList) {
              var table = 'w_' + tableList[i];
              retWords = retWords.concat(this._searchInArray(pattern, Avro.Data.dict[table]));
          }
@@ -116,7 +116,7 @@ Avro.DBSearch.prototype = {
         var word = '';
         var re = new RegExp(pattern);
 
-        for (w in wArray){
+        for (var w in wArray){
             word = wArray[w];
             if (re.test(word)){
                 retWords.push(word);
