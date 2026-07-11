@@ -55,10 +55,14 @@ Avro.UI = Avro.UI || {};
     document.addEventListener('focusout', onFocusOut, true);
 
     Avro.UI.isEnabled = function () { return enabled; };
-    Avro.UI.enable = function () { enabled = true; };
+    Avro.UI.enable = function () {
+        enabled = true;
+        Avro.UI.StatusIndicator.flash(true);
+    };
     Avro.UI.disable = function () {
         enabled = false;
         if (activeController) activeController._cancel();
+        Avro.UI.StatusIndicator.flash(false);
     };
     Avro.UI.toggle = function () {
         enabled ? Avro.UI.disable() : Avro.UI.enable();
