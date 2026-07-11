@@ -48,6 +48,37 @@ Avro.UI.FieldAdapter.prototype = {
         return this.el.textContent;
     },
 
+    // True when there's a real, non-collapsed selection (e.g. from Ctrl+A or
+    // a manual drag-select), as opposed to just a blinking caret.
+    hasSelectionRange: function () {
+        if (!this.isContentEditable) {
+            return this.el.selectionStart !== this.el.selectionEnd;
+        }
+        var sel = window.getSelection();
+        return sel.rangeCount > 0 && !sel.getRangeAt(0).collapsed;
+    },
+
+    // Deletes exactly one Unicode codepoint immediately before the caret
+    // (handling surrogate pairs so astral characters aren't split), rather
+    // than relying on the browser's own backspace, which treats a Bangla
+    // consonant + vowel sign as a single grapheme cluster and deletes both
+    // at once.
+    deleteCodepointBeforeCaret: function () {
+        var idx = this.getCaretIndex();
+        if (idx <= 0) return false;
+
+        var value = this.getValue();
+        var deleteLen = 1;
+        var code = value.charCodeAt(idx - 1);
+        if (code >= 0xDC00 && code <= 0xDFFF && idx >= 2) {
+            var high = value.charCodeAt(idx - 2);
+            if (high >= 0xD800 && high <= 0xDBFF) deleteLen = 2;
+        }
+
+        this.replaceRange(idx - deleteLen, idx, '');
+        return true;
+    },
+
     // ---- contenteditable (best-effort: works for plain divs; editors that
     // fully own their own DOM model, e.g. rich text frameworks, may not
     // reflect these mutations back into their internal state) ----

@@ -40,10 +40,22 @@ Avro.UI.CandidateWindow.prototype = {
             '  font-size: ' + theme.fontSize + ';' +
             '  padding: 4px;' +
             '  display: flex;' +
+            '  flex-direction: column;' +
+            '  gap: 4px;' +
+            '  max-width: 480px;' +
+            '}' +
+            '.avro-row {' +
+            '  display: flex;' +
             '  flex-direction: row;' +
             '  flex-wrap: wrap;' +
-            '  max-width: 480px;' +
             '  gap: 2px;' +
+            '}' +
+            '.avro-raw {' +
+            '  font-family: monospace;' +
+            '  font-size: 0.85em;' +
+            '  opacity: 0.6;' +
+            '  padding: 2px 6px;' +
+            '  border-bottom: 1px solid ' + theme.border + ';' +
             '}' +
             '.avro-item {' +
             '  padding: 3px 8px;' +
@@ -65,6 +77,16 @@ Avro.UI.CandidateWindow.prototype = {
         this.box = document.createElement('div');
         this.box.className = 'avro-box';
 
+        this.rawEl = document.createElement('div');
+        this.rawEl.className = 'avro-raw';
+        this.rawEl.style.display = 'none';
+
+        this.itemsRow = document.createElement('div');
+        this.itemsRow.className = 'avro-row';
+
+        this.box.appendChild(this.rawEl);
+        this.box.appendChild(this.itemsRow);
+
         this.shadow.appendChild(style);
         this.shadow.appendChild(this.box);
     },
@@ -85,10 +107,22 @@ Avro.UI.CandidateWindow.prototype = {
         this._onSelect = cb;
     },
 
-    show: function (words, rect) {
+    // rawText (optional) is the Latin text actually typed so far, shown as a
+    // small header above the candidates -- e.g. typing "hi" shows "hi" above
+    // the ranked Bangla candidates, so what you typed and what it became are
+    // both visible at once.
+    show: function (words, rect, rawText) {
         this.mount();
         this._words = words.slice(0, Avro.Config.maxSuggestions);
         this._selectedIndex = 0;
+
+        if (rawText) {
+            this.rawEl.textContent = rawText;
+            this.rawEl.style.display = 'block';
+        } else {
+            this.rawEl.style.display = 'none';
+        }
+
         this._render();
 
         this.host.style.display = 'block';
@@ -137,7 +171,7 @@ Avro.UI.CandidateWindow.prototype = {
 
     _render: function () {
         var self = this;
-        this.box.innerHTML = '';
+        this.itemsRow.innerHTML = '';
         this._words.forEach(function (word, i) {
             var item = document.createElement('div');
             item.className = 'avro-item' + (i === self._selectedIndex ? ' avro-selected' : '');
@@ -160,7 +194,7 @@ Avro.UI.CandidateWindow.prototype = {
                 if (self._onSelect) self._onSelect(word, i);
             });
 
-            self.box.appendChild(item);
+            self.itemsRow.appendChild(item);
         });
     }
 };
