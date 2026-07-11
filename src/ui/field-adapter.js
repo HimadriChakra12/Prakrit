@@ -82,11 +82,25 @@ Avro.UI.FieldAdapter.prototype = {
         var endPos = this._getTextNodeAndOffset(end);
         range.setStart(startPos.node, startPos.offset);
         range.setEnd(endPos.node, endPos.offset);
+        sel.removeAllRanges();
+        sel.addRange(range);
+
+        // Framework-managed editors (Discord/Slack-style Slate.js or React/Draft.js
+        // composers) re-render from their own internal state, so directly mutating
+        // the DOM gets silently overwritten -- the change never appears. Routing
+        // through execCommand goes through the browser's native text-editing
+        // pipeline instead, which fires the real input/beforeinput events these
+        // frameworks are actually listening to.
+        if (this._insertViaExecCommand(text)) {
+            return;
+        }
+
+        // Fallback for plain contenteditable divs (no framework watching them),
+        // or browsers where execCommand is unavailable/deprecated away.
         range.deleteContents();
         var textNode = document.createTextNode(text);
         range.insertNode(textNode);
 
-        // Move caret to end of inserted text.
         var newRange = document.createRange();
         newRange.setStart(textNode, textNode.length);
         newRange.collapse(true);
@@ -94,6 +108,16 @@ Avro.UI.FieldAdapter.prototype = {
         sel.addRange(newRange);
 
         this.el.normalize();
+    },
+
+    _insertViaExecCommand: function (text) {
+        try {
+            if (typeof document.execCommand !== 'function') return false;
+            var ok = document.execCommand('insertText', false, text);
+            return !!ok;
+        } catch (e) {
+            return false;
+        }
     },
 
     // ---- pixel position of the caret, for placing the popup ----
