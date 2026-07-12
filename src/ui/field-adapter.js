@@ -64,18 +64,76 @@ Avro.UI.FieldAdapter.prototype = {
     // consonant + vowel sign as a single grapheme cluster and deletes both
     // at once.
     deleteCodepointBeforeCaret: function () {
-        var idx = this.getCaretIndex();
-        if (idx <= 0) return false;
+        if (!this.isContentEditable) {
+            var idx = this.getCaretIndex();
+            if (idx <= 0) return false;
 
-        var value = this.getValue();
+            var value = this.getValue();
+            var deleteLen = 1;
+            var code = value.charCodeAt(idx - 1);
+            if (code >= 0xDC00 && code <= 0xDFFF && idx >= 2) {
+                var high = value.charCodeAt(idx - 2);
+                if (high >= 0xD800 && high <= 0xDBFF) deleteLen = 2;
+            }
+
+            this.replaceRange(idx - deleteLen, idx, '');
+            return true;
+        }
+        return this._deleteCodepointCE();
+    },
+
+    // Operates directly on the live Selection's node/offset rather than
+    // converting to and from a flattened character index. Two independent
+    // tree-walks (one to find the caret, a second inside replaceRange to
+    // find where to edit) can disagree by a character or two in a
+    // framework-managed editor whose DOM shifts between calls -- which is
+    // what was causing backspace to occasionally eat the wrong text.
+    // Operating on the Selection's own current node/offset sidesteps that
+    // entirely for the common case.
+    _deleteCodepointCE: function () {
+        var sel = window.getSelection();
+        if (!sel.rangeCount) return false;
+        var range = sel.getRangeAt(0);
+        if (!range.collapsed) return false;
+
+        var node = range.startContainer;
+        var offset = range.startOffset;
+
+        if (node.nodeType !== 3 || offset <= 0) {
+            // Caret is at the very start of a text node, or sitting on an
+            // element boundary (e.g. between two separately-rendered leaf
+            // spans). There's no previous character within this same node
+            // to delete directly, and guessing which neighboring node to
+            // reach into is exactly the kind of cross-node assumption that
+            // breaks in framework-managed editors. Defer to the browser's
+            // own native backspace for this one edge case instead.
+            return false;
+        }
+
+        var text = node.textContent;
         var deleteLen = 1;
-        var code = value.charCodeAt(idx - 1);
-        if (code >= 0xDC00 && code <= 0xDFFF && idx >= 2) {
-            var high = value.charCodeAt(idx - 2);
+        var code = text.charCodeAt(offset - 1);
+        if (code >= 0xDC00 && code <= 0xDFFF && offset >= 2) {
+            var high = text.charCodeAt(offset - 2);
             if (high >= 0xD800 && high <= 0xDBFF) deleteLen = 2;
         }
 
-        this.replaceRange(idx - deleteLen, idx, '');
+        var deleteRange = document.createRange();
+        deleteRange.setStart(node, offset - deleteLen);
+        deleteRange.setEnd(node, offset);
+        sel.removeAllRanges();
+        sel.addRange(deleteRange);
+
+        if (this._insertViaExecCommand('')) {
+            return true;
+        }
+
+        node.textContent = text.slice(0, offset - deleteLen) + text.slice(offset);
+        var caretRange = document.createRange();
+        caretRange.setStart(node, offset - deleteLen);
+        caretRange.collapse(true);
+        sel.removeAllRanges();
+        sel.addRange(caretRange);
         return true;
     },
 

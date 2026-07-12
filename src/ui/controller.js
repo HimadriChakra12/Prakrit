@@ -5,6 +5,34 @@
  * (since Bangla text can't be un-transliterated back to Latin), asks
  * the SuggestionBuilder for a live preview + candidate list, and
  * rewrites the field's text as the user types.
+ *
+ * Two things make this trickier than it looks, both specific to
+ * framework-managed editors (React/Slate-style message boxes, which is
+ * what most chat apps use):
+ *
+ * 1. Position tracking is content-verified, not index-based: rather than
+ *    trusting a remembered "word started at character N" across multiple
+ *    DOM-mutating operations, every edit first checks that the text
+ *    immediately before the caret still matches what we last inserted.
+ *    A stored absolute index goes silently stale the moment the host
+ *    page's framework restructures its own DOM, which it does routinely.
+ *
+ * 2. Two different clocks. Deciding "is this keystroke a continuation of
+ *    the word I'm already composing" (_active, the raw buffer) has to
+ *    happen synchronously and instantly on every keydown, or a fast burst
+ *    of typing arrives faster than we could otherwise react and each new
+ *    key would look like the start of a brand new word. But actually
+ *    writing to the DOM has to happen more carefully: framework-managed
+ *    editors re-render *asynchronously* in response to the input events
+ *    our own edits fire, and writing again before that settles reads/
+ *    writes a DOM that's mid-reconciliation. So: logical state (_active,
+ *    the raw buffer) updates immediately, synchronously, every keydown.
+ *    Actual DOM reads/writes are serialized one animation frame apart
+ *    (see _enqueue) and always operate on whatever the *current* state is
+ *    at the moment they run, not whatever it was when they were queued.
+ *
+ * If content verification fails, composition is abandoned rather than
+ * risking an edit at the wrong position.
  */
 
 var Avro = (typeof Avro !== 'undefined') ? Avro : {};
@@ -16,22 +44,67 @@ Avro.UI.Controller = function (field) {
     this.window = new Avro.UI.CandidateWindow();
     this.window.onSelect(this._onCandidatePicked.bind(this));
 
+    this._queue = null; // chain of pending deferred DOM work, see _enqueue
     this._reset();
 };
 
 Avro.UI.Controller.prototype = {
 
     _reset: function () {
-        this._active = false;      // is a word currently being composed?
-        this._rawBuffer = '';      // raw Latin typed so far, e.g. "bangla"
-        this._wordStart = 0;       // index into field value where word begins
-        this._previewLen = 0;      // length of the currently-inserted preview text
+        this._active = false;      // is a word currently being composed? (synchronous)
+        this._rawBuffer = '';      // raw Latin typed so far, e.g. "bangla" (synchronous)
+        this._lastPreview = null;  // exact string last confirmed written to the DOM (deferred layer only; null = nothing written yet)
         this._suggestion = null;   // last suggest() result
+    },
+
+    // Runs `fn` only after any previously-queued edit has both run AND had
+    // one animation frame to let the host page react to it (React/Slate
+    // etc. typically finish their re-render within a frame). Every actual
+    // DOM mutation goes through here instead of running immediately off
+    // the keydown handler, so a burst of fast typing can't get ahead of
+    // the framework's own reconciliation and read/write stale positions.
+    _enqueue: function (fn) {
+        var raf = (typeof requestAnimationFrame === 'function')
+            ? requestAnimationFrame
+            : function (cb) { setTimeout(cb, 16); };
+        var run = function () {
+            return new Promise(function (resolve) {
+                raf(function () {
+                    try { fn(); } finally { resolve(); }
+                });
+            });
+        };
+        this._queue = this._queue ? this._queue.then(run) : run();
+    },
+
+    // ---- public API for init.js (blur handling, disable-while-active) ----
+
+    // Equivalent to what a commit key does: accept whatever's currently
+    // composed as final. Used when the field loses focus.
+    finalize: function () {
+        if (!this._active) return;
+        this._finishComposition(undefined);
+    },
+
+    // Equivalent to Escape: revert to the raw Latin text typed so far.
+    // Used when the IME is toggled off mid-word.
+    cancelComposition: function () {
+        if (!this._active) return;
+        var self = this;
+        var rawSnapshot = this._rawBuffer;
+        this._active = false;
+        this._enqueue(function () { self._cancelWithData(rawSnapshot); });
     },
 
     // ---- key handling ----
     // Returns true if the event was consumed (caller should preventDefault).
+    // Every decision here, and every _active/_rawBuffer update, happens
+    // synchronously -- this must not wait on the DOM queue, or a fast burst
+    // of keystrokes would each see stale state from before the previous
+    // one had "happened" yet.
     handleKeyDown: function (e) {
+        var self = this;
+
         if (this._matchesKey(e, Avro.Config.toggleKey)) {
             Avro.UI.toggle();
             return true;
@@ -42,10 +115,13 @@ Avro.UI.Controller.prototype = {
         // Standard editing shortcuts (select-all, copy, cut, paste, undo, redo,
         // find, etc.) operate on the whole field or document, not just our
         // tracked word. Let them through untouched, and drop any in-progress
-        // composition since our tracked [wordStart, wordStart+previewLen)
-        // range is meaningless the moment a selection like Ctrl+A happens.
+        // composition since it's meaningless the moment something like
+        // Ctrl+A changes the selection out from under us.
         if (e.ctrlKey || e.metaKey) {
-            if (this._active) { this._reset(); this.window.hide(); }
+            if (this._active) {
+                this._active = false;
+                this._enqueue(function () { self.window.hide(); });
+            }
             return false;
         }
 
@@ -55,39 +131,69 @@ Avro.UI.Controller.prototype = {
             if (Avro.Config.digitSelect && /^[1-9]$/.test(e.key)) {
                 var picked = this.window.selectIndex(parseInt(e.key, 10) - 1);
                 if (picked !== undefined && picked !== null) {
-                    this._applyCandidate(picked);
+                    this._finishComposition(picked);
                     return true;
                 }
             }
         }
 
         if (e.key === Avro.Config.cancelKey && this._active) {
-            this._cancel();
+            var rawSnapshot = this._rawBuffer;
+            this._active = false;
+            this._enqueue(function () { self._cancelWithData(rawSnapshot); });
             return true;
         }
 
         if (Avro.Config.commitKeys.indexOf(e.key) !== -1 && this._active) {
             // Commit current preview (or highlighted candidate), then let the
             // key's own default behavior happen (e.g. actually insert the space).
-            if (this.window.isVisible()) {
-                this._applyCandidate(this.window.getSelected());
-            } else {
-                this._commit();
-            }
+            var selected = this.window.isVisible() ? this.window.getSelected() : undefined;
+            this._finishComposition(selected);
             return false;
         }
 
         if (e.key === 'Backspace' && Avro.Config.smartBackspace) {
-            return this._handleBackspace();
+            if (this.field.hasSelectionRange()) {
+                // A real selection (e.g. Ctrl+A, drag-select) -- this is a
+                // plain read of live browser selection state, not something
+                // we just mutated ourselves, so it's safe to check
+                // synchronously. Let the browser delete it natively.
+                if (this._active) {
+                    this._active = false;
+                    this._enqueue(function () { self.window.hide(); });
+                }
+                return false;
+            }
+
+            if (this._active) {
+                this._rawBuffer = this._rawBuffer.slice(0, -1);
+                if (this._rawBuffer.length === 0) {
+                    this._active = false;
+                    this._enqueue(function () { self._clearComposition(); });
+                } else {
+                    this._enqueue(function () { self._reparse(); });
+                }
+                return true;
+            }
+
+            // Not composing: delete exactly one Unicode codepoint from
+            // already-committed text (see FieldAdapter for why).
+            this._enqueue(function () { self.field.deleteCodepointBeforeCaret(); });
+            return true;
         }
 
         if (e.key.length === 1 && !e.altKey) {
             if (Avro.Config.wordCharRegex.test(e.key)) {
-                this._appendChar(e.key);
+                if (!this._active) {
+                    this._active = true;
+                    this._rawBuffer = '';
+                }
+                this._rawBuffer += e.key;
+                this._enqueue(function () { self._reparse(); });
                 return true;
             } else if (this._active) {
                 // Non-word character (punctuation etc.) ends the word.
-                this._commit();
+                this._finishComposition(undefined);
                 return false;
             }
         }
@@ -102,60 +208,56 @@ Avro.UI.Controller.prototype = {
             !!e.shiftKey === !!spec.shiftKey;
     },
 
-    // True only while backspacing would still be operating on the exact word
-    // we're tracking: composition is active, caret sits right at the end of
-    // our inserted preview, and nothing external (like a Ctrl+A selection)
-    // has changed the field out from under us.
-    _selectionMatchesComposition: function () {
-        if (!this._active) return false;
-        if (this.field.hasSelectionRange()) return false;
-        return this.field.getCaretIndex() === (this._wordStart + this._previewLen);
+    // Synchronously closes out the current composition (active flag) and
+    // defers the actual DOM/candidate-learning work. `word`, if given, is
+    // a specific candidate the user picked; otherwise whatever's already
+    // been written stands as the final answer. Deliberately does NOT
+    // clear this._rawBuffer here: any reparse() calls still pending in the
+    // queue from this same word need to keep reading the full buffer
+    // until this commit step (enqueued after them, so it runs last) has
+    // captured what it needs. The buffer only gets cleared when a genuinely
+    // new word starts (the next word-char keystroke, once it sees _active
+    // is false).
+    _finishComposition: function (word) {
+        var self = this;
+        var rawSnapshot = this._rawBuffer;
+        this._active = false;
+        this._enqueue(function () { self._commitWithData(rawSnapshot, word); });
     },
 
-    // ---- word composition ----
-
-    _appendChar: function (ch) {
-        if (!this._active) {
-            this._active = true;
-            this._rawBuffer = '';
-            this._wordStart = this.field.getCaretIndex();
-            this._previewLen = 0;
-        }
-        this._rawBuffer += ch;
-        this._reparse();
+    _onCandidatePicked: function (word) {
+        this._finishComposition(word);
     },
 
-    // Returns true if consumed (caller should preventDefault).
-    _handleBackspace: function () {
-        if (this._selectionMatchesComposition()) {
-            // Still actively typing this exact word: shrink the raw Latin
-            // buffer by one character and re-parse, same as before.
-            if (this._rawBuffer.length <= 1) {
-                this.field.replaceRange(this._wordStart, this._wordStart + this._previewLen, '');
-                this._reset();
-                this.window.hide();
-                return true;
-            }
-            this._rawBuffer = this._rawBuffer.slice(0, -1);
-            this._reparse();
-            return true;
-        }
+    // Checks that the field's actual current content still has our last
+    // confirmed-written preview sitting immediately before the caret, with
+    // nothing else selected. Returns the {start, end} range to replace if
+    // so, or null if reality has drifted from what we expect -- caret
+    // moved, external edit happened, or the host page's framework rewrote
+    // its DOM in a way that shifted things, or nothing's been written yet
+    // this composition. Checked fresh before every single edit; nothing is
+    // ever trusted from a previous step.
+    _verifyComposition: function () {
+        if (this._lastPreview === null) return null;
+        if (this.field.hasSelectionRange()) return null;
 
-        if (this._active) { this._reset(); this.window.hide(); }
+        var caretIndex = this.field.getCaretIndex();
+        var start = caretIndex - this._lastPreview.length;
+        if (start < 0) return null;
 
-        if (this.field.hasSelectionRange()) {
-            // A real selection (e.g. from Ctrl+A, or manual drag-select) --
-            // let the browser delete it natively.
-            return false;
-        }
+        var actual = this.field.getValue().substring(start, caretIndex);
+        if (actual !== this._lastPreview) return null;
 
-        // Not composing, no selection: override the browser's default
-        // backspace, which deletes an entire Bangla grapheme cluster
-        // (consonant + vowel sign) in one press. Delete exactly one Unicode
-        // codepoint instead, so e.g. \u09B9\u09BF steps back to \u09B9 first.
-        return this.field.deleteCodepointBeforeCaret();
+        return { start: start, end: caretIndex };
     },
 
+    // ---- deferred DOM work (all of these run only from inside _enqueue) ----
+
+    // Always reads this._rawBuffer fresh (not a captured value), so if
+    // several keystrokes queued up faster than frames are available, later
+    // reparse calls naturally supersede earlier ones with the fuller,
+    // more current buffer instead of each doing separate, increasingly
+    // stale partial work.
     _reparse: function () {
         var suggestion = this.suggestionBuilder.suggest(this._rawBuffer);
         this._suggestion = suggestion;
@@ -166,38 +268,56 @@ Avro.UI.Controller.prototype = {
         var words = (suggestion.words && suggestion.words.length) ? suggestion.words : [this._rawBuffer];
         var preview = words[0];
 
-        this.field.replaceRange(this._wordStart, this._wordStart + this._previewLen, preview);
-        this._previewLen = preview.length;
+        var range = this._verifyComposition();
+        var caretIndex = this.field.getCaretIndex();
+        var start = range ? range.start : caretIndex;
+
+        this.field.replaceRange(start, caretIndex, preview);
+        this._lastPreview = preview;
 
         var rect = this.field.getCaretRect();
         this.window.show(words, rect, this._rawBuffer);
     },
 
-    _applyCandidate: function (word) {
-        if (word === undefined || word === null) { this._commit(); return; }
-        this.field.replaceRange(this._wordStart, this._wordStart + this._previewLen, word);
-        this._previewLen = word.length;
-        this.suggestionBuilder.updateCandidateSelection(this._rawBuffer, word);
-        this._commit();
-    },
-
-    _onCandidatePicked: function (word) {
-        this._applyCandidate(word);
-    },
-
-    _commit: function () {
-        if (this._suggestion && this._suggestion.words) {
-            var finalWord = this.field.getValue().substr(this._wordStart, this._previewLen);
-            this.suggestionBuilder.stringCommitted(this._rawBuffer, finalWord);
+    _clearComposition: function () {
+        var range = this._verifyComposition();
+        if (range) {
+            this.field.replaceRange(range.start, range.end, '');
         }
-        this._reset();
+        this._lastPreview = null;
+        this._suggestion = null;
         this.window.hide();
     },
 
-    _cancel: function () {
-        // Revert to the raw Latin text the user actually typed.
-        this.field.replaceRange(this._wordStart, this._wordStart + this._previewLen, this._rawBuffer);
-        this._reset();
+    // word: a specific candidate to write instead of whatever's already
+    // there, or undefined to just accept what's currently shown.
+    _commitWithData: function (rawBuffer, word) {
+        if (word !== undefined && word !== null) {
+            var range = this._verifyComposition();
+            if (range) {
+                this.field.replaceRange(range.start, range.end, word);
+            }
+            this._lastPreview = word;
+        }
+
+        if (this._suggestion && this._suggestion.words && this._lastPreview !== null) {
+            this.suggestionBuilder.updateCandidateSelection(rawBuffer, this._lastPreview);
+            this.suggestionBuilder.stringCommitted(rawBuffer, this._lastPreview);
+        }
+
+        this._lastPreview = null;
+        this._suggestion = null;
+        this.window.hide();
+    },
+
+    _cancelWithData: function (rawBuffer) {
+        var range = this._verifyComposition();
+        if (range) {
+            // Revert to the raw Latin text the user actually typed.
+            this.field.replaceRange(range.start, range.end, rawBuffer);
+        }
+        this._lastPreview = null;
+        this._suggestion = null;
         this.window.hide();
     }
 };

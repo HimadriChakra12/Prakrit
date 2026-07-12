@@ -47,7 +47,7 @@ Avro.UI = Avro.UI || {};
 
     function onFocusOut(e) {
         if (activeController && e.target === (activeController.field && activeController.field.el)) {
-            activeController._commit();
+            activeController.finalize();
         }
     }
 
@@ -61,7 +61,7 @@ Avro.UI = Avro.UI || {};
     };
     Avro.UI.disable = function () {
         enabled = false;
-        if (activeController) activeController._cancel();
+        if (activeController) activeController.cancelComposition();
         Avro.UI.StatusIndicator.flash(false);
     };
     Avro.UI.toggle = function () {
