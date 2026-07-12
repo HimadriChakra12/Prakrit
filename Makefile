@@ -22,13 +22,10 @@ $(BIN): $(SRC)
 	$(CC) $(CFLAGS) -o $(BIN) $(SRC) $(LDLIBS)
 
 $(OUT): $(BIN) tools/build.js src/namespace.js
-	@mkdir -p dist
 	./$(BIN) tools/build.js
 
 rebuild:
-	@mkdir -p dist
 	./$(BIN) tools/build.js
 
 clean:
 	rm -f $(BIN)
-	rm -rf dist
