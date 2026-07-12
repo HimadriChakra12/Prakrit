@@ -24,7 +24,7 @@ using the source code in this repository.
 
 3. You can configure the UI by modifying [src/ui/config.js](./src/ui/config.js) then use `make`
 
-4. Make a new script on Violentmonkey and Copy & Paste the `./disk/avro.user.js` to the New Script
+4. Make a new script on Violentmonkey and Copy & Paste the `./dist/avro.user.js` to the New Script
 
 ## Contributors
  
