@@ -22,6 +22,7 @@ $(BIN): $(SRC)
 	$(CC) $(CFLAGS) -o $(BIN) $(SRC) $(LDLIBS)
 
 $(OUT): $(BIN) tools/build.js src/namespace.js
+	rm -f dist/avro.user.js
 	./$(BIN) tools/build.js
 
 rebuild:
