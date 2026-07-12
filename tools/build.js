@@ -57,10 +57,6 @@ var CHUNKS = [
     "src/ui/init.js"
 ];
 
-// ---------------------------------------------------------------------
-// build
-// ---------------------------------------------------------------------
-
 function buildHeader(meta) {
     var lines = [];
     lines.push("// ==UserScript==");
@@ -96,10 +92,12 @@ function main() {
 
     var parts = [];
     var totalBytes = 0;
+    var strippedBytes = 0;
     for (var c = 0; c < CHUNKS.length; c++) {
         var path = CHUNKS[c];
         var content = readFile(path);
         totalBytes += content.length;
+        strippedBytes += content.length;
         log("  [" + (c + 1) + "/" + CHUNKS.length + "] " + path + " (" + content.length + " bytes)");
         parts.push(content);
     }
@@ -119,7 +117,8 @@ function main() {
     writeFile(OUT_FILE, wrapped);
 
     log("avroc: wrote " + OUT_FILE + " (" + wrapped.length + " bytes, " +
-        Math.round(wrapped.length / 1024) + " KB, from " + totalBytes + " bytes of source)");
+        Math.round(wrapped.length / 1024) + " KB, from " + totalBytes + " bytes of source, " +
+        strippedBytes + " after stripping comments)");
 }
 
 main();
