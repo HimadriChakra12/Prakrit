@@ -259,6 +259,11 @@ Avro.UI.Controller.prototype = {
     // more current buffer instead of each doing separate, increasingly
     // stale partial work.
     _reparse: function () {
+        // Was anything already written to the DOM for this composition?
+        // Only true once an earlier step has actually put a preview on
+        // screen -- see the note on _verifyComposition below.
+        var hadPreviousWrite = (this._lastPreview !== null);
+
         var suggestion = this.suggestionBuilder.suggest(this._rawBuffer);
         this._suggestion = suggestion;
 
@@ -269,6 +274,31 @@ Avro.UI.Controller.prototype = {
         var preview = words[0];
 
         var range = this._verifyComposition();
+
+        // _verifyComposition() returns null in two very different cases,
+        // which must NOT be handled the same way:
+        //  (a) nothing has been written for this composition yet (fresh
+        //      word, this._lastPreview is still null) -- there's nothing to
+        //      replace, so writing the first preview at the caret is
+        //      correct.
+        //  (b) something WAS written, but the field no longer matches what
+        //      we expect (caret moved, external edit, host page's
+        //      framework re-rendered the DOM). Here the caret position is
+        //      no longer trustworthy as "end of our text", so blindly
+        //      inserting at it would leave the old, stale preview sitting
+        //      in the field and glue the new preview onto it -- producing
+        //      the "backspacing repeats old text" corruption. Per the
+        //      design note at the top of this file, composition must be
+        //      abandoned instead: stop composing and leave the field alone
+        //      rather than risk an edit at the wrong position.
+        if (hadPreviousWrite && !range) {
+            this._active = false;
+            this._lastPreview = null;
+            this._suggestion = null;
+            this.window.hide();
+            return;
+        }
+
         var caretIndex = this.field.getCaretIndex();
         var start = range ? range.start : caretIndex;
 
