@@ -22,16 +22,19 @@ Avro.UI.FieldAdapter.prototype = {
     },
 
     // Replace the range [start, end) of the field's text with `text`,
-    // and move the caret to start + text.length.
+    // and move the caret to start + text.length. Always returns a Promise
+    // (resolved immediately for a plain input/textarea, since that path
+    // is fully synchronous) so callers have one uniform async interface
+    // regardless of field type.
     replaceRange: function (start, end, text) {
         if (!this.isContentEditable) {
             var val = this.el.value;
             this.el.value = val.slice(0, start) + text + val.slice(end);
             var pos = start + text.length;
             this.el.setSelectionRange(pos, pos);
-        } else {
-            this._replaceRangeCE(start, end, text);
+            return Promise.resolve();
         }
+        return this._replaceRangeCE(start, end, text);
     },
 
     getCaretIndex: function () {
@@ -83,7 +86,7 @@ Avro.UI.FieldAdapter.prototype = {
     deleteCodepointBeforeCaret: function () {
         if (!this.isContentEditable) {
             var idx = this.getCaretIndex();
-            if (idx <= 0) return false;
+            if (idx <= 0) return Promise.resolve(false);
 
             var value = this.getValue();
             var deleteLen = 1;
@@ -93,8 +96,7 @@ Avro.UI.FieldAdapter.prototype = {
                 if (high >= 0xD800 && high <= 0xDBFF) deleteLen = 2;
             }
 
-            this.replaceRange(idx - deleteLen, idx, '');
-            return true;
+            return this.replaceRange(idx - deleteLen, idx, '').then(function () { return true; });
         }
         return this._deleteCodepointCE();
     },
@@ -109,9 +111,9 @@ Avro.UI.FieldAdapter.prototype = {
     // entirely for the common case.
     _deleteCodepointCE: function () {
         var sel = window.getSelection();
-        if (!sel.rangeCount) return false;
+        if (!sel.rangeCount) return Promise.resolve(false);
         var range = sel.getRangeAt(0);
-        if (!range.collapsed) return false;
+        if (!range.collapsed) return Promise.resolve(false);
 
         var node = range.startContainer;
         var offset = range.startOffset;
@@ -124,7 +126,7 @@ Avro.UI.FieldAdapter.prototype = {
             // reach into is exactly the kind of cross-node assumption that
             // breaks in framework-managed editors. Defer to the browser's
             // own native backspace for this one edge case instead.
-            return false;
+            return Promise.resolve(false);
         }
 
         var text = node.textContent;
@@ -141,21 +143,22 @@ Avro.UI.FieldAdapter.prototype = {
         sel.removeAllRanges();
         sel.addRange(deleteRange);
 
-        if (this._insertViaInputEvent('')) {
-            return true;
-        }
+        var self = this;
+        return this._insertViaInputEvent('').then(function (ok) {
+            if (ok) return true;
 
-        if (this._insertViaExecCommand('')) {
-            return true;
-        }
+            if (self._insertViaExecCommand('')) {
+                return true;
+            }
 
-        node.textContent = text.slice(0, offset - deleteLen) + text.slice(offset);
-        var caretRange = document.createRange();
-        caretRange.setStart(node, offset - deleteLen);
-        caretRange.collapse(true);
-        sel.removeAllRanges();
-        sel.addRange(caretRange);
-        return true;
+            node.textContent = text.slice(0, offset - deleteLen) + text.slice(offset);
+            var caretRange = document.createRange();
+            caretRange.setStart(node, offset - deleteLen);
+            caretRange.collapse(true);
+            sel.removeAllRanges();
+            sel.addRange(caretRange);
+            return true;
+        });
     },
 
     // ---- contenteditable (best-effort: works for plain divs; editors that
@@ -206,6 +209,8 @@ Avro.UI.FieldAdapter.prototype = {
         sel.removeAllRanges();
         sel.addRange(range);
 
+        var self = this;
+
         // Framework-managed editors (Discord/Slack-style Slate.js, or React/
         // Draft.js/Lexical composers) maintain their OWN internal document
         // model and re-render the DOM from it -- they don't just read
@@ -218,59 +223,97 @@ Avro.UI.FieldAdapter.prototype = {
         // `beforeinput` event is what actually gets Slate's attention --
         // it's the specific event these frameworks are built to intercept
         // and apply through their own model, which is the only way an edit
-        // here reliably sticks. Also confirmed directly: successive inserts
-        // correctly append, the placeholder clears, and Enter sends.
-        if (this._insertViaInputEvent(text)) {
-            return;
-        }
+        // here reliably sticks (see _insertViaInputEvent for why this has
+        // to wait for selectionchange first).
+        return this._insertViaInputEvent(text).then(function (ok) {
+            if (ok) return;
 
-        // Not intercepted by a framework -- try the browser's native
-        // editing command, which performs a real DOM edit regardless of
-        // whether anything is listening.
-        if (this._insertViaExecCommand(text)) {
-            return;
-        }
+            // Not intercepted by a framework -- try the browser's native
+            // editing command, which performs a real DOM edit regardless of
+            // whether anything is listening.
+            if (self._insertViaExecCommand(text)) {
+                return;
+            }
 
-        // Last resort: raw DOM manipulation for plain contenteditable divs,
-        // or browsers where neither of the above is available.
-        range.deleteContents();
-        var textNode = document.createTextNode(text);
-        range.insertNode(textNode);
+            // Last resort: raw DOM manipulation for plain contenteditable
+            // divs, or browsers where neither of the above is available.
+            range.deleteContents();
+            var textNode = document.createTextNode(text);
+            range.insertNode(textNode);
 
-        var newRange = document.createRange();
-        newRange.setStart(textNode, textNode.length);
-        newRange.collapse(true);
-        sel.removeAllRanges();
-        sel.addRange(newRange);
+            var newRange = document.createRange();
+            newRange.setStart(textNode, textNode.length);
+            newRange.collapse(true);
+            sel.removeAllRanges();
+            sel.addRange(newRange);
 
-        this.el.normalize();
+            self.el.normalize();
+        });
     },
 
-    // Dispatches a real `beforeinput` event with the current selection
-    // already positioned, so a listening framework applies the edit
-    // through its own model exactly as if the browser itself had produced
-    // this event from real user input. Returns true only if something
-    // actually intercepted it (called preventDefault()) -- that's the
-    // signal a framework picked it up and applied it; if nothing did, this
-    // call had no effect at all (synthetic events don't trigger the
+    // Dispatches a real `beforeinput` event -- but only after first
+    // confirming the selection change we just made (via sel.addRange
+    // above) has actually been processed. selectionchange fires
+    // asynchronously, and a framework's beforeinput handler reads *its
+    // own* already-updated internal model (not a live DOM read) to decide
+    // what's being replaced. Dispatching immediately, in the same
+    // synchronous tick as addRange(), meant the framework's model hadn't
+    // caught up yet -- confirmed directly against Discord: replacing an
+    // existing selection this way inserted the new text at Slate's stale
+    // (still collapsed, still-at-the-old-position) caret instead of
+    // actually replacing the selected range, producing duplicated text
+    // like "চক্রচক্রবর্তী" instead of "চক্রবর্তী". Waiting for the real
+    // selectionchange notification (with a short timeout fallback in case
+    // one doesn't fire, e.g. the selection didn't actually move) gives
+    // Slate's own listener -- registered well before ours, since Discord's
+    // app initializes long before this script runs -- a chance to run
+    // first and update its model to match.
+    //
+    // Returns a Promise<boolean>: true only if something actually
+    // intercepted the dispatched event (called preventDefault()) -- that's
+    // the signal a framework picked it up and applied it; if nothing did,
+    // this had no effect at all (synthetic events don't trigger the
     // browser's native edit the way a real one would), so the caller needs
     // to fall back to another method.
     _insertViaInputEvent: function (text) {
-        try {
-            if (typeof InputEvent !== 'function') return false;
-            var isDelete = (text === '');
-            var evt = new InputEvent('beforeinput', {
-                inputType: isDelete ? 'deleteContentBackward' : 'insertText',
-                data: isDelete ? null : text,
-                bubbles: true,
-                cancelable: true,
-                composed: true
-            });
-            this.el.dispatchEvent(evt);
-            return evt.defaultPrevented;
-        } catch (e) {
-            return false;
-        }
+        var self = this;
+        return new Promise(function (resolve) {
+            if (typeof InputEvent !== 'function') { resolve(false); return; }
+
+            var fired = false;
+            var onSelectionChange = function () {
+                if (fired) return;
+                fired = true;
+                document.removeEventListener('selectionchange', onSelectionChange, true);
+                dispatch();
+            };
+            document.addEventListener('selectionchange', onSelectionChange, true);
+            // Safety net: don't hang forever if selectionchange never fires
+            // (e.g. the selection didn't actually change position).
+            setTimeout(function () {
+                if (fired) return;
+                fired = true;
+                document.removeEventListener('selectionchange', onSelectionChange, true);
+                dispatch();
+            }, 0);
+
+            function dispatch() {
+                try {
+                    var isDelete = (text === '');
+                    var evt = new InputEvent('beforeinput', {
+                        inputType: isDelete ? 'deleteContentBackward' : 'insertText',
+                        data: isDelete ? null : text,
+                        bubbles: true,
+                        cancelable: true,
+                        composed: true
+                    });
+                    self.el.dispatchEvent(evt);
+                    resolve(evt.defaultPrevented);
+                } catch (e) {
+                    resolve(false);
+                }
+            }
+        });
     },
 
     _insertViaExecCommand: function (text) {

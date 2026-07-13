@@ -58,7 +58,7 @@ Avro.UI.Controller.prototype = {
         var run = function () {
             return new Promise(function (resolve) {
                 raf(function () {
-                    try { fn(); } finally { resolve(); }
+                    Promise.resolve().then(fn).then(resolve, resolve);
                 });
             });
         };
@@ -202,6 +202,8 @@ Avro.UI.Controller.prototype = {
     },
 
     _reparse: function () {
+        var self = this;
+        var epoch = this._epoch;
         var hadPreviousWrite = (this._lastPreview !== null);
 
         var suggestion = this.suggestionBuilder.suggest(this._rawBuffer);
@@ -220,49 +222,64 @@ Avro.UI.Controller.prototype = {
         var caretIndex = this.field.getCaretIndex();
         var start = range ? range.start : caretIndex;
 
-        this.field.replaceRange(start, caretIndex, preview);
-        this._lastPreview = preview;
-
-        var rect = this.field.getCaretRect();
-        this.window.show(words, rect, this._rawBuffer);
+        // replaceRange is now async for a contenteditable field (it has to
+        // wait for the browser to actually process the selection change
+        // before dispatching -- see field-adapter.js). Something else
+        // (e.g. Ctrl+Backspace) could invalidate this composition while
+        // that write is still in flight; re-checking the epoch afterward
+        // avoids writing this preview into a field state that's no longer
+        // this composition's to touch.
+        return this.field.replaceRange(start, caretIndex, preview).then(function () {
+            if (epoch !== self._epoch) return;
+            self._lastPreview = preview;
+            var rect = self.field.getCaretRect();
+            self.window.show(words, rect, self._rawBuffer);
+        });
     },
 
     _clearComposition: function () {
+        var self = this;
         var range = this._verifyComposition();
-        if (range) {
-            this.field.replaceRange(range.start, range.end, '');
-        }
-        this._lastPreview = null;
-        this._suggestion = null;
-        this.window.hide();
+        var p = range ? this.field.replaceRange(range.start, range.end, '') : Promise.resolve();
+        return p.then(function () {
+            self._lastPreview = null;
+            self._suggestion = null;
+            self.window.hide();
+        });
     },
 
     _commitWithData: function (rawBuffer, word) {
+        var self = this;
+        var p = Promise.resolve();
+
         if (word !== undefined && word !== null) {
             var range = this._verifyComposition();
             if (range) {
-                this.field.replaceRange(range.start, range.end, word);
+                p = this.field.replaceRange(range.start, range.end, word);
             }
             this._lastPreview = word;
         }
 
-        if (this._suggestion && this._suggestion.words && this._lastPreview !== null) {
-            this.suggestionBuilder.updateCandidateSelection(rawBuffer, this._lastPreview);
-            this.suggestionBuilder.stringCommitted(rawBuffer, this._lastPreview);
-        }
+        return p.then(function () {
+            if (self._suggestion && self._suggestion.words && self._lastPreview !== null) {
+                self.suggestionBuilder.updateCandidateSelection(rawBuffer, self._lastPreview);
+                self.suggestionBuilder.stringCommitted(rawBuffer, self._lastPreview);
+            }
 
-        this._lastPreview = null;
-        this._suggestion = null;
-        this.window.hide();
+            self._lastPreview = null;
+            self._suggestion = null;
+            self.window.hide();
+        });
     },
 
     _cancelWithData: function (rawBuffer) {
+        var self = this;
         var range = this._verifyComposition();
-        if (range) {
-            this.field.replaceRange(range.start, range.end, rawBuffer);
-        }
-        this._lastPreview = null;
-        this._suggestion = null;
-        this.window.hide();
+        var p = range ? this.field.replaceRange(range.start, range.end, rawBuffer) : Promise.resolve();
+        return p.then(function () {
+            self._lastPreview = null;
+            self._suggestion = null;
+            self.window.hide();
+        });
     }
 };

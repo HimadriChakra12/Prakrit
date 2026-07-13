@@ -42,6 +42,20 @@ Avro.UI = Avro.UI || {};
         var consumed = controller.handleKeyDown(e);
         if (consumed) {
             e.preventDefault();
+            // Not just preventDefault: this runs in the capture phase, so
+            // without stopping propagation the event still reaches the
+            // host page's own keydown handling further down (Discord's
+            // Slate editor, Slack, etc.) completely unaware we've claimed
+            // this key. preventDefault() only suppresses the browser's
+            // native default action -- it does nothing to stop a
+            // framework's own JS keydown handler from independently
+            // reacting to the very same event, e.g. "there's a selection
+            // and a printable key was pressed, so delete the selection" --
+            // which collides with the selection we deliberately leave
+            // spanning the current preview while composing, and was the
+            // actual cause of fast typing / space appearing to delete the
+            // word out from under us.
+            e.stopPropagation();
         }
     }
 
