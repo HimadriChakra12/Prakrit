@@ -50,5 +50,25 @@ Avro.Config = {
         border: '#3a3a3a',
         fontSize: '14px',
         fontFamily: '"Noto Sans Bengali", "Siyam Rupali", sans-serif'
-    }
+    },
+
+    // ---------------------------------------------------------------------------
+    // Custom dictionary
+    // ---------------------------------------------------------------------------
+    // Map banglish keys to one or more Bengali output strings.
+    // Values may be a single string or an array of strings (multiple candidates).
+    //
+    // Example:
+    //   customDict: {
+    //       'shuvo': 'শুভ',
+    //       'noboborsho': ['নববর্ষ', 'নতুন বছর'],
+    //       'vai': 'ভাই',
+    //   }
+    // Set customDict to {} or null to disable.
+    customDict: {},
+
+    // 'top'         – custom entries prepended before built-in dict results.
+    // 'bottom'      – custom entries appended after built-in dict results.
+    // 'autocorrect' – first custom entry takes the autocorrect slot (index 0).
+    customDictPriority: 'top'
 };

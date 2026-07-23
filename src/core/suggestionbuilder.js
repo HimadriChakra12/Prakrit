@@ -30,6 +30,20 @@ Avro.SuggestionBuilder.prototype = {
     },
     
     
+    // Returns an array of Bengali strings from the user's customDict for the
+    // given banglish key, or [] if there is no match / customDict is disabled.
+    _getCustomDictSuggestion: function(key){
+        var cfg = (typeof Avro !== 'undefined' && Avro.Config) ? Avro.Config : null;
+        if (!cfg || !cfg.customDict) return [];
+
+        var hit = cfg.customDict[key] || cfg.customDict[key.toLowerCase()];
+        if (!hit) return [];
+
+        // Normalise to array
+        return Array.isArray(hit) ? hit.slice(0) : [hit];
+    },
+
+
     _getDictionarySuggestion: function(splitWord){
         var words = [];
         
@@ -231,8 +245,22 @@ Avro.SuggestionBuilder.prototype = {
                 suggestion['words'] = words;
                 suggestion['prevSelection'] = 0;
         } else {
+                // Resolve custom dict entries for this word
+                var customKey = splitWord['middle'];
+                var customWords = this._getCustomDictSuggestion(customKey);
+                var priority = (typeof Avro !== 'undefined' && Avro.Config && Avro.Config.customDictPriority)
+                               ? Avro.Config.customDictPriority : 'top';
 
-                /* 1st Item: Autocorrect */
+                /* 1st Item: Autocorrect (built-in) or custom 'autocorrect'-priority entry */
+                if (priority === 'autocorrect' && customWords.length > 0) {
+                    // Pin first custom entry as autocorrect slot; rest go into dictSuggestion
+                    autoCorrect['corrected'] = customWords[0];
+                    autoCorrect['exact'] = false;
+                    for (var ci = 1; ci < customWords.length; ci++){
+                        dictSuggestion.unshift(customWords[ci]);
+                    }
+                }
+
                 if (autoCorrect['corrected']){
                     words.push(autoCorrect['corrected']);
                     //Add autocorrect entry to dictSuggestion for suffix support
@@ -240,8 +268,26 @@ Avro.SuggestionBuilder.prototype = {
                         dictSuggestion.push(autoCorrect['corrected']);
                     }
                 }
-        
-        
+
+                // Prepend custom words before built-in results ('top' priority)
+                if (priority === 'top') {
+                    for (var ci = customWords.length - 1; ci >= 0; ci--){
+                        var cw = customWords[ci];
+                        var idx = dictSuggestion.indexOf(cw);
+                        if (idx !== -1) dictSuggestion.splice(idx, 1);
+                        dictSuggestion.unshift(cw);
+                    }
+                }
+
+                // Append custom words after built-in results ('bottom' priority)
+                if (priority === 'bottom') {
+                    for (var ci = 0; ci < customWords.length; ci++){
+                        var cw = customWords[ci];
+                        if (dictSuggestion.indexOf(cw) === -1) dictSuggestion.push(cw);
+                    }
+                }
+
+
                 /* 2rd Item: Dictionary Avro Phonetic */
                 //Update Phonetic Cache
                 if(!this._phoneticCache[splitWord['middle'].toLowerCase()]){
